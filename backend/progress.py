@@ -45,6 +45,11 @@ class InMemoryProgressStore:
             updated_at=datetime.utcnow().isoformat()
         )
         self._store[job_id] = state
+        print(
+            f"[PROGRESS] job={job_id} "
+            f"step={step} ({step_index}/{total_steps}) "
+            f"progress={progress_percent}% :: {message}"
+        )
         return state
 
     def get(self, job_id: str) -> Dict:

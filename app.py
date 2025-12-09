@@ -1,11 +1,12 @@
 # app.py
 import io
 import uuid
+import hashlib
 from pathlib import Path
 
 import streamlit as st
 
-from backend.models import TemplateProfile, SlidePlan, GeneratedDeck
+from backend.models import TemplateProfile, GeneratedDeck
 from backend.storage import (
     save_template_profile,
     load_template_profile,
@@ -13,7 +14,6 @@ from backend.storage import (
 )
 from backend.template_parser import parse_pptx_template
 from backend.pipeline import run_generation_job
-from backend.progress import progress_store
 from backend.deck_builder import build_pptx_from_generated_deck
 
 
@@ -27,10 +27,6 @@ def init_session_state():
         st.session_state.current_template_id = None
     if "current_deck_id" not in st.session_state:
         st.session_state.current_deck_id = None
-    if "current_job_id" not in st.session_state:
-        st.session_state.current_job_id = None
-    if "last_status" not in st.session_state:
-        st.session_state.last_status = {}
     if "topic" not in st.session_state:
         st.session_state.topic = ""
     if "slide_count" not in st.session_state:
@@ -38,7 +34,7 @@ def init_session_state():
 
 
 def sidebar_navigation() -> str:
-    st.sidebar.title("AI Deck Builder (Skeleton)")
+    st.sidebar.title("AI Deck Builder")
     page = st.sidebar.radio(
         "Go to",
         ["Generate Deck", "Manage Templates"],
@@ -46,11 +42,27 @@ def sidebar_navigation() -> str:
     return page
 
 
+def _make_short_ppt_name(topic: str) -> str:
+    """
+    Create a short, filesystem-safe name from the topic.
+    """
+    base = (topic or "").strip().replace("\n", " ")
+    if not base:
+        return "generated_deck"
+    words = base.split()
+    short_words = words[:6]
+    short = "_".join(short_words)
+    short = "".join(ch for ch in short if ch.isalnum() or ch in ("_", "-"))
+    if not short:
+        short = "generated_deck"
+    return short[:60]
+
+
 def page_generate_deck():
-    st.title("Generate Deck from Template (Skeleton)")
+    st.title("Generate Deck from Template")
     st.write(
-        "This is a starter UI. The AI logic is not wired yet; "
-        "we're using stub planning and placeholder content."
+        "Upload your enterprise PPT template and describe the deck you want. "
+        "The system will analyze the template and generate a matching deck."
     )
 
     # Template uploader
@@ -65,13 +77,14 @@ def page_generate_deck():
     template_profile: TemplateProfile | None = None
 
     if uploaded_file is not None:
-        # Save the raw PPTX file
         raw_bytes = uploaded_file.read()
-        template_id = f"tpl_{uuid.uuid4().hex[:8]}"
+        # Use file hash as stable template_id so we don't spam data/ with duplicates
+        tpl_hash = hashlib.md5(raw_bytes).hexdigest()[:8]
+        template_id = f"tpl_{tpl_hash}"
         ppt_path = TEMPLATE_PPT_DIR / f"{template_id}.pptx"
         ppt_path.write_bytes(raw_bytes)
+        print(f"[APP] Saved uploaded template to {ppt_path} (id={template_id})")
 
-        # Parse into TemplateProfile
         with st.spinner("Parsing template..."):
             profile = parse_pptx_template(
                 file_path=ppt_path,
@@ -83,7 +96,6 @@ def page_generate_deck():
             template_profile = profile
             st.success(f"Template parsed and saved with id: {template_id}")
     elif template_id:
-        # Try to load existing template profile
         try:
             template_profile = load_template_profile(template_id)
             st.info(f"Using previously loaded template: {template_profile.name}")
@@ -97,7 +109,7 @@ def page_generate_deck():
     topic = st.text_area(
         "Topic / description",
         value=st.session_state.topic,
-        placeholder="e.g. User Manual for Product X",
+        placeholder="e.g. Deep Research for QM-PQR – how it generates detailed reports vs simple RAG answers",
     )
     st.session_state.topic = topic
 
@@ -109,60 +121,47 @@ def page_generate_deck():
     )
     st.session_state.slide_count = slide_count
 
-    st.caption(
-        "For now, this will create a simple stub: cover + content placeholders + closing slide."
-    )
+    st.caption("We’ll generate a structured deck with a cover, content slides and a closing slide.")
 
     st.markdown("---")
 
-    st.subheader("3. Generate (stub) deck")
-    col1, col2 = st.columns([1, 1])
+    st.subheader("3. Generate deck")
+    status_placeholder = st.empty()
+    progress_bar = st.progress(0)
 
-    with col1:
-        generate_clicked = st.button(
-            "Generate Deck (Stub)",
-            disabled=(template_profile is None or not topic.strip()),
-            type="primary",
-        )
-
-    with col2:
-        check_status_clicked = st.button("Check Progress / Refresh")
+    generate_clicked = st.button(
+        "Generate Deck",
+        disabled=(template_profile is None or not topic.strip()),
+        type="primary",
+    )
 
     if generate_clicked and template_profile is not None:
         job_id = f"job_{uuid.uuid4().hex[:8]}"
-        st.session_state.current_job_id = job_id
+        print(f"[APP] Generate button clicked. job_id={job_id}")
 
-        # Trigger pipeline synchronously for now
-        deck = run_generation_job(
-            job_id=job_id,
-            template=template_profile,
-            topic=topic,
-            requested_slide_count=slide_count,
-        )
+        def ui_progress(percent: int, message: str) -> None:
+            print(f"[APP] UI progress update: {percent}% - {message}")
+            status_placeholder.write(f"**Status:** {message}")
+            progress_bar.progress(percent)
+
+        with st.spinner("Generating deck with AI..."):
+            deck = run_generation_job(
+                job_id=job_id,
+                template=template_profile,
+                topic=topic,
+                requested_slide_count=slide_count,
+                progress_callback=ui_progress,
+            )
         st.session_state.current_deck_id = deck.deck_id
-        st.success(f"Generation finished (stub). Deck ID: {deck.deck_id}")
-
-    # Show progress
-    if st.session_state.current_job_id:
-        status = progress_store.get(st.session_state.current_job_id)
-        if status:
-            st.session_state.last_status = status
-            st.write(f"**Status:** {status.get('message', '')}")
-            st.progress(int(status.get("progress_percent", 0)))
-        else:
-            st.write("No progress state found yet.")
-
-    elif check_status_clicked:
-        st.info("No job started yet.")
+        st.success(f"Generation finished. Deck ID: {deck.deck_id}")
 
     st.markdown("---")
     st.subheader("4. Preview & Download")
 
     if st.session_state.current_deck_id:
         deck: GeneratedDeck = load_generated_deck(st.session_state.current_deck_id)
-        st.write(f"Deck ID: `{deck.deck_id}` (stub content)")
+        st.write(f"Deck ID: `{deck.deck_id}`")
 
-        # Simple tabular preview
         preview_rows = []
         for s in sorted(deck.slides, key=lambda x: x.slide_index):
             preview_rows.append(
@@ -176,11 +175,11 @@ def page_generate_deck():
             )
         st.table(preview_rows)
 
-        # Build a real PPTX file from stub content + template
         if template_profile is not None:
             template_ppt_path = TEMPLATE_PPT_DIR / f"{template_profile.template_id}.pptx"
             output_path = DATA_DIR / f"{deck.deck_id}.pptx"
 
+            print(f"[APP] Building final PPTX to {output_path}")
             build_pptx_from_generated_deck(
                 template_path=template_ppt_path,
                 profile=template_profile,
@@ -188,11 +187,12 @@ def page_generate_deck():
                 output_path=output_path,
             )
 
+            short_name = _make_short_ppt_name(deck.topic)
             with open(output_path, "rb") as f:
                 st.download_button(
-                    label="Download generated PPTX (Stub)",
+                    label="Download generated PPTX",
                     data=f,
-                    file_name=f"{deck.topic.replace(' ', '_')}.pptx",
+                    file_name=f"{short_name}.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 )
     else:
@@ -200,11 +200,8 @@ def page_generate_deck():
 
 
 def page_manage_templates():
-    st.title("Manage Templates (Skeleton)")
+    st.title("Manage Templates")
 
-    st.write("This page can later list, inspect, and delete stored templates.")
-
-    # For now, just show the current template ID
     if st.session_state.current_template_id:
         tpl_id = st.session_state.current_template_id
         try:
@@ -221,7 +218,7 @@ def page_manage_templates():
 
 def main():
     st.set_page_config(
-        page_title="AI Deck Builder (Skeleton)",
+        page_title="AI Deck Builder",
         layout="wide",
         initial_sidebar_state="expanded",
     )

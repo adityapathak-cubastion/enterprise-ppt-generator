@@ -30,6 +30,7 @@ def _layout_id(pptx_layout_index: int) -> str:
 
 
 def parse_pptx_template(file_path: Path, template_id: str, name: str) -> TemplateProfile:
+    print(f"[TEMPLATE_PARSER] Parsing PPTX template: {file_path} (id={template_id})")
     prs = Presentation(file_path)
 
     slide_layouts: List[SlideLayoutProfile] = []
@@ -93,12 +94,18 @@ def parse_pptx_template(file_path: Path, template_id: str, name: str) -> Templat
                 )
             )
 
+        print(
+            f"[TEMPLATE_PARSER] Layout index={idx} name={layout.name!r} "
+            f"text_placeholders={text_placeholder_count} "
+            f"image_placeholders={image_placeholder_count}"
+        )
+
         layout_profile = SlideLayoutProfile(
             layout_id=_layout_id(idx),
             pptx_layout_index=idx,
             name=layout.name,
-            label="UNKNOWN",  # to be refined later by AI / rules
-            intended_roles=[],  # to be filled later
+            label="UNKNOWN",
+            intended_roles=[],
             text_capacity=_guess_text_capacity(text_placeholder_count),
             image_capacity=_guess_text_capacity(image_placeholder_count),
             placeholders=placeholders,
@@ -106,7 +113,6 @@ def parse_pptx_template(file_path: Path, template_id: str, name: str) -> Templat
         slide_layouts.append(layout_profile)
 
     brand_profile = BrandProfile(
-        # TODO: extract real theme colors & fonts if needed
         primary_colors=[],
         secondary_colors=[],
         fonts={},
@@ -117,6 +123,12 @@ def parse_pptx_template(file_path: Path, template_id: str, name: str) -> Templat
         "slide_master_count": len(prs.slide_masters),
         "layout_count": len(prs.slide_layouts),
     }
+
+    print(
+        f"[TEMPLATE_PARSER] Parsed template '{name}' with "
+        f"{pptx_metadata['layout_count']} layouts, "
+        f"{pptx_metadata['slide_master_count']} slide masters."
+    )
 
     profile = TemplateProfile(
         template_id=template_id,

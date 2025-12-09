@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 import uuid
 import logging
 
@@ -20,6 +20,35 @@ logger = logging.getLogger(__name__)
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+ProgressCallback = Optional[Callable[[int, str], None]]  # (percent, message)
+
+
+# helper to broadcast progress to store + UI callback
+def _report_progress(
+    job_id: str,
+    step: str,
+    step_index: int,
+    total_steps: int,
+    progress_percent: int,
+    message: str,
+    cb: ProgressCallback,
+) -> None:
+    progress_store.update(
+        job_id,
+        step=step,
+        step_index=step_index,
+        total_steps=total_steps,
+        progress_percent=progress_percent,
+        message=message,
+    )
+    print(
+        f"[PIPELINE] job={job_id} step={step} ({step_index}/{total_steps}) "
+        f"{progress_percent}% :: {message}"
+    )
+    if cb:
+        cb(progress_percent, message)
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +144,7 @@ def _template_analysis_agent(template: TemplateProfile) -> TemplateProfile:
     Use the LLM to refine layout labels and intended roles
     based on structural info extracted from the PPTX.
     """
-
+    print("[PIPELINE] Starting template analysis agent...")
     layout_descriptions: List[Dict[str, Any]] = []
     for layout in template.slide_layouts:
         text_placeholders = [
@@ -197,6 +226,7 @@ def _template_analysis_agent(template: TemplateProfile) -> TemplateProfile:
             # Make sure all roles are strings
             layout.intended_roles = [str(r) for r in roles]
 
+    print("[PIPELINE] Template analysis agent complete.")
     return template
 
 
@@ -213,7 +243,7 @@ def _slide_planner_agent(
     Use the LLM to create a high-level slide outline and assign
     roles + content types for each slide.
     """
-
+    print("[PIPELINE] Starting slide planner agent...")
     template_summary = [
         {
             "layout_id": l.layout_id,
@@ -306,6 +336,7 @@ def _slide_planner_agent(
         )
         items.append(item)
 
+    print(f"[PIPELINE] Slide planner produced {len(items)} slides.")
     return items
 
 
@@ -318,7 +349,7 @@ def _style_guide_agent(topic: str) -> Dict[str, Any]:
     Generate a simple style guide for the presentation
     (tone, audience, formality). This is used as context for slide content.
     """
-
+    print(f"[PIPELINE] Generating style guide for topic: {topic!r}")
     system_prompt = (
         "You are defining a short style guide for a presentation deck. "
         "Given the topic, infer the likely audience and appropriate tone.\n\n"
@@ -358,6 +389,7 @@ def _style_guide_agent(topic: str) -> Dict[str, Any]:
         "reading_level": result.get("reading_level", "Upper intermediate"),
         "tone_adjectives": result.get("tone_adjectives", ["clear", "confident", "helpful"]),
     }
+    print("[PIPELINE] Style guide agent complete.")
     return style
 
 
@@ -373,7 +405,10 @@ def _slide_content_agent(
     """
     Generate content for a single slide using the LLM.
     """
-
+    print(
+        f"[PIPELINE] Generating content for slide {slide_item.slide_index} "
+        f"role={slide_item.role} type={content_type}"
+    )
     max_bullets = slide_item.meta.get("max_bullets", 5)
     role = slide_item.role
     content_type = slide_item.content_type or "TEXT_MEDIUM"
@@ -447,6 +482,7 @@ def _slide_content_agent(
         speaker_notes=str(speaker_notes).strip() if speaker_notes else None,
         meta=slide_item.meta,
     )
+    print(f"[PIPELINE] Slide {slide_item.slide_index} content generated.")
     return slide
 
 
@@ -572,39 +608,46 @@ def run_generation_job(
     template: TemplateProfile,
     topic: str,
     requested_slide_count: int,
+    progress_callback: ProgressCallback = None,
 ) -> GeneratedDeck:
     """
     Entire pipeline:
     - Template analysis (AI)
     - Slide planning (AI)
     - Style guide (AI)
-    - Slide content generation (AI, slide-by-slide)
+    - Slide content generation (AI)
     - Progress tracking
     - Fallback to stub pipeline if anything fails
     """
 
     total_steps = 4
+    print(
+        f"[PIPELINE] run_generation_job started job_id={job_id}, "
+        f"topic={topic!r}, requested_slide_count={requested_slide_count}"
+    )
 
     try:
         # Step 1: Template analysis
-        progress_store.update(
+        _report_progress(
             job_id,
             step="analyze_template",
             step_index=1,
             total_steps=total_steps,
             progress_percent=5,
             message="Analyzing template with AI...",
+            cb=progress_callback,
         )
         analyzed_template = _template_analysis_agent(template)
 
         # Step 2: Slide plan
-        progress_store.update(
+        _report_progress(
             job_id,
             step="plan_slides",
             step_index=2,
             total_steps=total_steps,
             progress_percent=25,
             message="Designing slide outline with AI...",
+            cb=progress_callback,
         )
         slide_items = _slide_planner_agent(
             template=analyzed_template,
@@ -623,24 +666,26 @@ def run_generation_job(
         save_slide_plan(plan)
 
         # Step 3: Style guide
-        progress_store.update(
+        _report_progress(
             job_id,
             step="style_guide",
             step_index=3,
             total_steps=total_steps,
             progress_percent=35,
             message="Creating presentation style guide with AI...",
+            cb=progress_callback,
         )
         style_guide = _style_guide_agent(topic)
 
         # Step 4: Slide content generation
-        progress_store.update(
+        _report_progress(
             job_id,
             step="generate_deck",
             step_index=4,
             total_steps=total_steps,
             progress_percent=40,
             message="Generating slide content with AI...",
+            cb=progress_callback,
         )
 
         slides: List[GeneratedSlide] = []
@@ -653,15 +698,15 @@ def run_generation_job(
             )
             slides.append(slide)
 
-            # Incremental progress within this step
             progress = 40 + int(50 * i / max(1, total_slides))
-            progress_store.update(
+            _report_progress(
                 job_id,
                 step="generate_deck",
                 step_index=4,
                 total_steps=total_steps,
                 progress_percent=min(progress, 95),
                 message=f"Generating slide {i}/{total_slides} with AI...",
+                cb=progress_callback,
             )
 
         deck = GeneratedDeck(
@@ -674,35 +719,40 @@ def run_generation_job(
         )
         save_generated_deck(deck)
 
-        progress_store.update(
+        _report_progress(
             job_id,
             step="done",
             step_index=4,
             total_steps=total_steps,
             progress_percent=100,
             message="Deck generation finished with AI.",
+            cb=progress_callback,
         )
+        print(f"[PIPELINE] run_generation_job finished successfully job_id={job_id}")
         return deck
 
     except Exception as e:
         logger.exception("AI pipeline failed; falling back to stub implementation: %s", e)
-        # Fallback: stub behavior
-        progress_store.update(
+        print(f"[PIPELINE] ERROR in AI pipeline: {e}. Falling back to stub.")
+
+        _report_progress(
             job_id,
             step="fallback_stub",
             step_index=1,
             total_steps=1,
             progress_percent=10,
             message="AI pipeline failed; generating stub deck instead...",
+            cb=progress_callback,
         )
         plan = create_basic_slide_plan(template, topic, requested_slide_count)
         deck = create_stub_generated_deck(plan)
-        progress_store.update(
+        _report_progress(
             job_id,
             step="done",
             step_index=1,
             total_steps=1,
             progress_percent=100,
             message="Stub deck generation finished.",
+            cb=progress_callback,
         )
         return deck

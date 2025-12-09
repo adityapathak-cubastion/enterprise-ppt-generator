@@ -18,10 +18,12 @@ for d in [TEMPLATE_DIR, PLAN_DIR, DECK_DIR]:
 
 
 def _save_model(model: T, path: Path) -> None:
+    print(f"[STORAGE] Saving {model.__class__.__name__} to {path}")
     path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _load_model(path: Path, cls: Type[T]) -> T:
+    print(f"[STORAGE] Loading {cls.__name__} from {path}")
     raw = path.read_text(encoding="utf-8")
     data = json.loads(raw)
     return cls.model_validate(data)

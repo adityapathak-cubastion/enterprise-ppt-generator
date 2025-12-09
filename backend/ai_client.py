@@ -30,9 +30,9 @@ def _check_env() -> None:
         missing.append("AZURE_OPENAI_DEPLOYMENT_NAME")
 
     if missing:
-        raise RuntimeError(
-            f"Missing Azure OpenAI environment variables: {', '.join(missing)}"
-        )
+        msg = f"Missing Azure OpenAI environment variables: {', '.join(missing)}"
+        print(f"[AI_CLIENT] {msg}")
+        raise RuntimeError(msg)
 
 
 def get_azure_client() -> AzureOpenAI:
@@ -40,6 +40,7 @@ def get_azure_client() -> AzureOpenAI:
     Returns an AzureOpenAI client configured from environment variables.
     """
     _check_env()
+    print("[AI_CLIENT] Initializing AzureOpenAI client...")
     client = AzureOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         api_key=AZURE_OPENAI_API_KEY,
@@ -56,13 +57,13 @@ def chat_completion_json(
     """
     Convenience wrapper around Azure OpenAI chat.completions.create
     that enforces JSON output and parses it.
-
-    Raises:
-        RuntimeError if environment is missing
-        json.JSONDecodeError if response is not valid JSON
     """
     client = get_azure_client()
 
+    print(
+        f"[AI_CLIENT] Calling Azure OpenAI with {len(messages)} messages, "
+        f"temperature={temperature}, max_tokens={max_tokens}"
+    )
     logger.debug("Sending messages to Azure OpenAI: %s", messages)
 
     response = client.chat.completions.create(
@@ -74,6 +75,7 @@ def chat_completion_json(
     )
 
     content = response.choices[0].message.content
+    print(f"[AI_CLIENT] Raw response length: {len(content or '')} chars")
     logger.debug("Raw LLM response content: %s", content)
 
     data = json.loads(content)
