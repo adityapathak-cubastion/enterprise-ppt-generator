@@ -1,0 +1,5 @@
+streamlit
+python-pptx
+pydantic>=2.0.0
+openai>=1.30.0
+python-dotenv
