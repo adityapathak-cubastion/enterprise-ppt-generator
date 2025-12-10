@@ -407,7 +407,7 @@ def _slide_content_agent(
     """
     print(
         f"[PIPELINE] Generating content for slide {slide_item.slide_index} "
-        f"role={slide_item.role} type={content_type}"
+        f"role={slide_item.role}"
     )
     max_bullets = slide_item.meta.get("max_bullets", 5)
     role = slide_item.role
